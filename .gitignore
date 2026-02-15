@@ -1,0 +1,16 @@
+# Build output
+build/*.o
+jsmock
+
+# Dependencies
+deps/
+
+# Project docs (private)
+CLAUDE.md
+SPEC.md
+DESIGN.md
+
+# Editor files
+*.swp
+*.swo
+*~
