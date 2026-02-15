@@ -1,6 +1,5 @@
 #include "js_main.h"
 #include <fcntl.h>
-#include <errno.h>
 
 static js_msec_t js_engine_time(void)
 {
@@ -114,25 +113,10 @@ void js_engine_run(js_engine_t *eng) {
     for (;;) {
         timeout = js_timer_find(&eng->timers);
 
-        int n = js_epoll_wait(&eng->epoll, (int) timeout);
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
+        if (js_epoll_poll(&eng->epoll, (int) timeout) < 0)
             break;
-        }
 
         js_timer_expire(&eng->timers, js_engine_time());
-
-        for (int i = 0; i < n; i++) {
-            struct epoll_event *ev = &eng->epoll.events[i];
-            js_event_t *event = ev->data.ptr;
-
-            if ((ev->events & EPOLLIN) && event->read) {
-                event->read(event);
-            } else if ((ev->events & EPOLLOUT) && event->write) {
-                event->write(event);
-            }
-        }
     }
 }
 

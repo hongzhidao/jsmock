@@ -30,7 +30,7 @@ int  js_epoll_init(js_epoll_t *ep, int max_events);
 int  js_epoll_add(js_epoll_t *ep, int fd, uint32_t events, void *ptr);
 int  js_epoll_mod(js_epoll_t *ep, int fd, uint32_t events, void *ptr);
 int  js_epoll_del(js_epoll_t *ep, int fd);
-int  js_epoll_wait(js_epoll_t *ep, int timeout_ms);
+int  js_epoll_poll(js_epoll_t *ep, int timeout_ms);
 void js_epoll_free(js_epoll_t *ep);
 
 #endif

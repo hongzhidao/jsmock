@@ -1,4 +1,5 @@
 #include "js_main.h"
+#include <errno.h>
 
 int js_epoll_init(js_epoll_t *ep, int max_events) {
     ep->fd = epoll_create1(EPOLL_CLOEXEC);
@@ -27,8 +28,28 @@ int js_epoll_del(js_epoll_t *ep, int fd) {
     return epoll_ctl(ep->fd, EPOLL_CTL_DEL, fd, NULL);
 }
 
-int js_epoll_wait(js_epoll_t *ep, int timeout_ms) {
-    return epoll_wait(ep->fd, ep->events, ep->max_events, timeout_ms);
+int js_epoll_poll(js_epoll_t *ep, int timeout_ms) {
+    int i, n;
+    js_event_t *ev;
+    struct epoll_event *event;
+
+    n = epoll_wait(ep->fd, ep->events, ep->max_events, timeout_ms);
+    if (n < 0) {
+        return (errno == EINTR) ? 0 : -1;
+    }
+
+    for (i = 0; i < n; i++) {
+        event = &ep->events[i];
+        ev = event->data.ptr;
+
+        if ((event->events & EPOLLIN) && ev->read) {
+            ev->read(ev);
+        } else if ((event->events & EPOLLOUT) && ev->write) {
+            ev->write(ev);
+        }
+    }
+
+    return 0;
 }
 
 void js_epoll_free(js_epoll_t *ep) {
