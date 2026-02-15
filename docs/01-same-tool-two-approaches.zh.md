@@ -140,4 +140,6 @@ jsmock 的故事是：先设计好架构再让 AI 写，第一版就是 72 分�
 
 ---
 
-系列文章：[一个 nginx 工程师带 AI 从零做了个项目](https://github.com/hongzhidao/jsmock)
+专栏：[我带 AI 写了个项目](https://www.zhihu.com/column/c_2006330352843657698)
+
+GitHub: https://github.com/hongzhidao/jsmock
