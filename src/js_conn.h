@@ -16,7 +16,7 @@ typedef enum {
 } js_conn_state_t;
 
 typedef struct {
-    int              fd;
+    js_event_t       event;
     js_conn_state_t  state;
     js_buf_t         rbuf;
     js_buf_t         wbuf;

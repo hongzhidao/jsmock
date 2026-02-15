@@ -1,7 +1,22 @@
 #ifndef JS_EPOLL_H
 #define JS_EPOLL_H
 
-/* ---- struct ---- */
+/* ---- event ---- */
+
+typedef struct js_event_s js_event_t;
+
+typedef void (*js_event_handler_t)(js_event_t *ev);
+
+struct js_event_s {
+    int                  fd;
+    js_event_handler_t   read;
+    js_event_handler_t   write;
+};
+
+#define js_event_data(ev, type, field) \
+    js_container_of(ev, type, field)
+
+/* ---- epoll ---- */
 
 typedef struct {
     int                 fd;          /* epoll fd */

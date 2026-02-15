@@ -46,7 +46,7 @@ js_conn_t *js_conn_create(int fd) {
     js_conn_t *conn = calloc(1, sizeof(*conn));
     if (!conn)
         return NULL;
-    conn->fd = fd;
+    conn->event.fd = fd;
     conn->state = JS_CONN_READING;
     js_buf_init(&conn->rbuf);
     js_buf_init(&conn->wbuf);
@@ -57,7 +57,7 @@ js_conn_t *js_conn_create(int fd) {
 
 int js_conn_read(js_conn_t *conn) {
     char tmp[4096];
-    ssize_t n = read(conn->fd, tmp, sizeof(tmp));
+    ssize_t n = read(conn->event.fd, tmp, sizeof(tmp));
     if (n <= 0)
         return (int)n; /* 0 = EOF, -1 = error */
     conn->last_active = time(NULL);
@@ -70,7 +70,7 @@ int js_conn_write(js_conn_t *conn) {
     size_t remaining = conn->wbuf.len - conn->woff;
     if (remaining == 0)
         return 0;
-    ssize_t n = write(conn->fd, conn->wbuf.data + conn->woff, remaining);
+    ssize_t n = write(conn->event.fd, conn->wbuf.data + conn->woff, remaining);
     if (n < 0)
         return -1;
     conn->woff += n;
@@ -80,8 +80,8 @@ int js_conn_write(js_conn_t *conn) {
 }
 
 void js_conn_close(js_conn_t *conn, js_epoll_t *ep) {
-    js_epoll_del(ep, conn->fd);
-    close(conn->fd);
+    js_epoll_del(ep, conn->event.fd);
+    close(conn->event.fd);
     conn->state = JS_CONN_CLOSING;
 }
 
