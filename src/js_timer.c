@@ -1,88 +1,127 @@
 #include "js_main.h"
-#include <sys/timerfd.h>
 
-int js_timer_init(js_timer_t *tm) {
-    tm->tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    if (tm->tfd < 0)
-        return -1;
-    tm->entries = NULL;
-    return 0;
+static intptr_t js_timer_rbtree_compare(js_rbtree_node_t *node1,
+    js_rbtree_node_t *node2)
+{
+    js_timer_t *timer1, *timer2;
+
+    timer1 = (js_timer_t *) node1;
+    timer2 = (js_timer_t *) node2;
+
+    /*
+     * Timer values are distributed in small range, usually several minutes
+     * and overflow every 49 days if js_msec_t is stored in 32 bits.
+     * This signed comparison takes into account that overflow.
+     */
+    return (js_msec_int_t) (timer1->time - timer2->time);
 }
 
-/* arm timerfd to fire at nearest deadline */
-static void js_timer_arm(js_timer_t *tm) {
-    struct itimerspec its = {0};
-    if (tm->entries) {
-        its.it_value.tv_sec = tm->entries->deadline;
-    }
-    /* all-zero its disarms the timer if no entries */
-    timerfd_settime(tm->tfd, TFD_TIMER_ABSTIME, &its, NULL);
+void js_timers_init(js_timers_t *timers)
+{
+    js_rbtree_init(&timers->tree, js_timer_rbtree_compare);
+    timers->now = 0;
+    timers->minimum = 0;
 }
 
-int js_timer_add(js_timer_t *tm, int fd, int timeout_sec) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+void js_timer_add(js_timers_t *timers, js_timer_t *timer, js_msec_t timeout)
+{
+    int32_t diff;
+    js_msec_t time;
 
-    js_timer_entry_t *entry = malloc(sizeof(*entry));
-    if (!entry)
-        return -1;
-    entry->fd = fd;
-    entry->deadline = now.tv_sec + timeout_sec;
+    time = timers->now + timeout;
 
-    /* insert sorted by deadline (ascending) */
-    js_timer_entry_t **pp = &tm->entries;
-    while (*pp && (*pp)->deadline <= entry->deadline)
-        pp = &(*pp)->next;
-    entry->next = *pp;
-    *pp = entry;
+    timer->enabled = 1;
 
-    js_timer_arm(tm);
-    return 0;
-}
+    if (js_timer_is_in_tree(timer)) {
+        diff = (js_msec_int_t) (time - timer->time);
 
-int js_timer_remove(js_timer_t *tm, int fd) {
-    js_timer_entry_t **pp = &tm->entries;
-    while (*pp) {
-        if ((*pp)->fd == fd) {
-            js_timer_entry_t *e = *pp;
-            *pp = e->next;
-            free(e);
-            js_timer_arm(tm);
-            return 0;
+        if (diff >= -(int32_t)timer->bias && diff <= (int32_t)timer->bias) {
+            return;
         }
-        pp = &(*pp)->next;
+
+        js_rbtree_delete(&timers->tree, &timer->node);
+        js_timer_in_tree_clear(timer);
     }
-    return -1;
+
+    timer->time = time;
+    js_rbtree_insert(&timers->tree, &timer->node);
 }
 
-int js_timer_sweep(js_timer_t *tm) {
-    /* consume timerfd */
-    uint64_t exp;
-    if (read(tm->tfd, &exp, sizeof(exp)) < 0)
-        return 0;
+void js_timer_delete(js_timers_t *timers, js_timer_t *timer)
+{
+    timer->enabled = 0;
 
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-
-    int count = 0;
-    while (tm->entries && tm->entries->deadline <= now.tv_sec) {
-        js_timer_entry_t *e = tm->entries;
-        tm->entries = e->next;
-        /* TODO: caller should close the expired fd */
-        free(e);
-        count++;
+    if (js_timer_is_in_tree(timer)) {
+        js_rbtree_delete(&timers->tree, &timer->node);
+        js_timer_in_tree_clear(timer);
     }
-    js_timer_arm(tm);
-    return count;
 }
 
-void js_timer_free(js_timer_t *tm) {
-    while (tm->entries) {
-        js_timer_entry_t *e = tm->entries;
-        tm->entries = e->next;
-        free(e);
+js_msec_t js_timer_find(js_timers_t *timers)
+{
+    int32_t delta;
+    js_msec_t time;
+    js_timer_t *timer;
+    js_rbtree_t *tree;
+    js_rbtree_node_t *node, *next;
+
+    tree = &timers->tree;
+
+    for (node = js_rbtree_min(tree);
+         js_rbtree_is_there_successor(tree, node);
+         node = next)
+    {
+        next = js_rbtree_node_successor(tree, node);
+
+        timer = (js_timer_t *) node;
+
+        if (timer->enabled) {
+            time = timer->time;
+            timers->minimum = time - timer->bias;
+
+            delta = (js_msec_int_t) (time - timers->now);
+
+            return (js_msec_t) (delta > 0 ? delta : 0);
+        }
     }
-    if (tm->tfd >= 0)
-        close(tm->tfd);
-    tm->tfd = -1;
+
+    timers->minimum = timers->now + 24 * 60 * 60 * 1000;
+
+    return (js_msec_t) -1;
+}
+
+void js_timer_expire(js_timers_t *timers, js_msec_t now)
+{
+    js_timer_t *timer;
+    js_rbtree_t *tree;
+    js_rbtree_node_t *node, *next;
+
+    timers->now = now;
+
+    if ((js_msec_int_t) (timers->minimum - now) > 0) {
+        return;
+    }
+
+    tree = &timers->tree;
+
+    for (node = js_rbtree_min(tree);
+         js_rbtree_is_there_successor(tree, node);
+         node = next)
+    {
+        timer = (js_timer_t *) node;
+
+        if ((js_msec_int_t) (timer->time - now) > (int32_t) timer->bias) {
+            return;
+        }
+
+        next = js_rbtree_node_successor(tree, node);
+
+        js_rbtree_delete(tree, &timer->node);
+        js_timer_in_tree_clear(timer);
+
+        if (timer->enabled) {
+            timer->enabled = 0;
+            timer->handler(timer, timer->data);
+        }
+    }
 }

@@ -1,25 +1,46 @@
 #ifndef JS_TIMER_H
 #define JS_TIMER_H
 
-/* ---- struct ---- */
+#define JS_TIMER_DEFAULT_BIAS  50
 
-typedef struct js_timer_entry_s {
-    int                       fd;        /* connection fd */
-    time_t                    deadline;
-    struct js_timer_entry_s  *next;
-} js_timer_entry_t;
+typedef struct js_timer_s js_timer_t;
+
+typedef void (*js_timer_handler_t)(js_timer_t *timer, void *data);
+
+struct js_timer_s {
+    /* The rbtree node must be the first field. */
+    js_rbtree_node_t node;
+    uint8_t bias;
+    uint8_t enabled;
+    js_msec_t time;
+    js_timer_handler_t handler;
+    void *data;
+};
 
 typedef struct {
-    int                tfd;       /* timerfd */
-    js_timer_entry_t  *entries;   /* sorted by deadline */
-} js_timer_t;
+    js_rbtree_t tree;
+    js_msec_t now;
+    js_msec_t minimum;
+} js_timers_t;
 
-/* ---- api ---- */
+#define js_timer_data(obj, type, timer) \
+    js_container_of(obj, type, timer)
 
-int  js_timer_init(js_timer_t *tm);
-int  js_timer_add(js_timer_t *tm, int fd, int timeout_sec);
-int  js_timer_remove(js_timer_t *tm, int fd);
-int  js_timer_sweep(js_timer_t *tm);  /* close expired, return count */
-void js_timer_free(js_timer_t *tm);
+#define js_timer_is_in_tree(timer) \
+    ((timer)->node.parent != NULL)
 
-#endif
+#define js_timer_in_tree_clear(timer) \
+    (timer)->node.parent = NULL
+
+void js_timers_init(js_timers_t *timers);
+js_msec_t js_timer_find(js_timers_t *timers);
+void js_timer_expire(js_timers_t *timers, js_msec_t now);
+void js_timer_add(js_timers_t *timers, js_timer_t *timer, js_msec_t timeout);
+void js_timer_delete(js_timers_t *timers, js_timer_t *timer);
+
+static inline void js_timer_disable(js_timer_t *timer)
+{
+    timer->enabled = 0;
+}
+
+#endif /* JS_TIMER_H */

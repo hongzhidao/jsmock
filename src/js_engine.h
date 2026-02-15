@@ -4,8 +4,8 @@
 /* ---- struct ---- */
 
 typedef struct {
-    js_epoll_t  epoll;
-    js_timer_t  timer;
+    js_epoll_t   epoll;
+    js_timers_t  timers;
 } js_engine_t;
 
 /* ---- api ---- */

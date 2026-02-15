@@ -22,6 +22,9 @@
 #pragma GCC diagnostic pop
 
 /* ---- module headers (dependency order) ---- */
+#include "js_clang.h"
+#include "js_time.h"
+#include "js_rbtree.h"
 #include "js_epoll.h"
 #include "js_timer.h"
 #include "js_engine.h"
