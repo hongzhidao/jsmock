@@ -20,7 +20,7 @@ int js_engine_init(js_engine_t *eng, int max_events) {
 static void js_engine_conn_read(js_event_t *ev);
 static void js_engine_conn_write(js_event_t *ev);
 
-static void js_engine_accept(js_event_t *ev) {
+void js_engine_accept(js_event_t *ev) {
     js_engine_t *eng = &js_thread_current->engine;
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
@@ -100,15 +100,6 @@ static void js_engine_conn_write(js_event_t *ev) {
 
 void js_engine_run(js_engine_t *eng) {
     js_msec_t timeout;
-    js_event_t listen;
-    js_runtime_t *rt = js_thread_current->rt;
-
-    listen.fd = rt->lfd;
-    listen.read = js_engine_accept;
-    listen.write = NULL;
-
-    /* add listen fd with EPOLLEXCLUSIVE to avoid thundering herd */
-    js_epoll_add(&eng->epoll, listen.fd, EPOLLIN | EPOLLEXCLUSIVE, &listen);
 
     for (;;) {
         timeout = js_timer_find(&eng->timers);
