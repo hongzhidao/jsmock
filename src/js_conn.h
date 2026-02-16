@@ -31,6 +31,10 @@ int  js_buf_append(js_buf_t *buf, const char *data, size_t len);
 void js_buf_consume(js_buf_t *buf, size_t n);
 void js_buf_free(js_buf_t *buf);
 
+/* ---- listen api ---- */
+
+int js_listen_start(js_event_t *ev, int lfd, js_epoll_t *ep);
+
 /* ---- conn api ---- */
 
 js_conn_t *js_conn_create(int fd);

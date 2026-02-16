@@ -11,14 +11,7 @@ static void *js_thread_entry(void *arg) {
         return NULL;
     }
 
-    js_event_t listen;
-    listen.fd = t->rt->lfd;
-    listen.read = js_engine_accept;
-    listen.write = NULL;
-
-    /* add listen fd with EPOLLEXCLUSIVE to avoid thundering herd */
-    js_epoll_add(&t->engine.epoll, listen.fd,
-                 EPOLLIN | EPOLLEXCLUSIVE, &listen);
+    js_listen_start(&t->listen, t->rt->lfd, &t->engine.epoll);
 
     js_engine_run(&t->engine);
     js_engine_free(&t->engine);
