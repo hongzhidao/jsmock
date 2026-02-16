@@ -1,5 +1,4 @@
 #include "js_main.h"
-#include <errno.h>
 
 static void js_usage(const char *prog) {
     fprintf(stderr, "Usage: %s <script.js>\n", prog);

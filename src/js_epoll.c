@@ -1,5 +1,4 @@
 #include "js_main.h"
-#include <errno.h>
 
 int js_epoll_init(js_epoll_t *ep, int max_events) {
     ep->fd = epoll_create1(EPOLL_CLOEXEC);

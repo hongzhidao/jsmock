@@ -1,6 +1,4 @@
 #include "js_main.h"
-#include <fcntl.h>
-#include <errno.h>
 
 int js_runtime_init(js_runtime_t *rt) {
     memset(rt, 0, sizeof(*rt));
