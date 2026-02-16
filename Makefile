@@ -6,9 +6,9 @@ LIBS    = deps/quickjs/libquickjs.a
 SRCDIR  = src
 BUILDDIR = build
 
-SRCS    = js_main.c js_time.c js_rbtree.c js_epoll.c js_timer.c js_engine.c js_thread.c \
+SRCS    = js_main.c js_time.c js_rbtree.c js_epoll.c js_timer.c js_engine.c js_buf.c \
           js_conn.c js_http.c js_route.c js_store.c js_qjs.c js_web.c \
-          js_tls.c js_runtime.c
+          js_tls.c js_thread.c js_runtime.c
 OBJS    = $(patsubst %.c,$(BUILDDIR)/%.o,$(SRCS))
 TARGET  = jsmock
 

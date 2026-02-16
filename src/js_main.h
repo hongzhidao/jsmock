@@ -17,6 +17,7 @@
 #include "js_epoll.h"
 #include "js_timer.h"
 #include "js_engine.h"
+#include "js_buf.h"
 #include "js_conn.h"
 #include "js_http.h"
 #include "js_route.h"

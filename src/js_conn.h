@@ -3,12 +3,6 @@
 
 /* ---- struct ---- */
 
-typedef struct {
-    char  *data;
-    size_t len;
-    size_t cap;
-} js_buf_t;
-
 typedef enum {
     JS_CONN_READING,
     JS_CONN_WRITING,
@@ -23,13 +17,6 @@ typedef struct {
     size_t           woff;          /* write offset (bytes already sent) */
     time_t           last_active;
 } js_conn_t;
-
-/* ---- buf api ---- */
-
-void js_buf_init(js_buf_t *buf);
-int  js_buf_append(js_buf_t *buf, const char *data, size_t len);
-void js_buf_consume(js_buf_t *buf, size_t n);
-void js_buf_free(js_buf_t *buf);
 
 /* ---- listen api ---- */
 
