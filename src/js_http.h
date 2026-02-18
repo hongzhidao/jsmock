@@ -38,6 +38,10 @@ typedef struct {
     size_t        body_len;
 } js_http_response_t;
 
+/* ---- conn init ---- */
+
+void js_http_conn_init(js_conn_t *conn);
+
 /* ---- api ---- */
 
 int              js_http_parse_request(js_buf_t *buf, js_http_request_t *req);

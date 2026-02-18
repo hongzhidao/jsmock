@@ -11,7 +11,7 @@ static void *js_thread_entry(void *arg) {
         return NULL;
     }
 
-    js_listen_start(&t->listen, t->rt->lfd, &t->engine.epoll);
+    js_listen_start(&t->listen, t->rt->lfd, &t->engine.epoll, js_http_conn_init);
 
     js_engine_run(&t->engine);
     js_engine_free(&t->engine);

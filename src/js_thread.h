@@ -10,7 +10,7 @@ typedef struct {
     pthread_t            tid;
     int                  id;        /* thread index */
     js_engine_t          engine;
-    js_event_t           listen;    /* listen socket event */
+    js_listen_t          listen;    /* listen socket event */
     struct js_runtime_s *rt;        /* back pointer to global runtime */
 } js_thread_t;
 

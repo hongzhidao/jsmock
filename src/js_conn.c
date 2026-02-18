@@ -2,10 +2,8 @@
 
 /* ---- listen ---- */
 
-static void js_conn_on_read(js_event_t *ev);
-static void js_conn_on_write(js_event_t *ev);
-
 static void js_listen_accept(js_event_t *ev) {
+    js_listen_t *ls = js_event_data(ev, js_listen_t, event);
     js_engine_t *eng = &js_thread_current->engine;
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
@@ -20,18 +18,18 @@ static void js_listen_accept(js_event_t *ev) {
         return;
     }
 
-    conn->event.read = js_conn_on_read;
-    conn->event.write = js_conn_on_write;
-
+    ls->on_conn_init(conn);
     js_epoll_add(&eng->epoll, fd, EPOLLIN, &conn->event);
 }
 
-int js_listen_start(js_event_t *ev, int lfd, js_epoll_t *ep)
+int js_listen_start(js_listen_t *ls, int lfd, js_epoll_t *ep,
+                    js_conn_init_t on_conn_init)
 {
-    ev->fd = lfd;
-    ev->read = js_listen_accept;
-    ev->write = NULL;
-    return js_epoll_add(ep, lfd, EPOLLIN | EPOLLEXCLUSIVE, ev);
+    ls->event.fd = lfd;
+    ls->event.read = js_listen_accept;
+    ls->event.write = NULL;
+    ls->on_conn_init = on_conn_init;
+    return js_epoll_add(ep, lfd, EPOLLIN | EPOLLEXCLUSIVE, &ls->event);
 }
 
 /* ---- conn ---- */
@@ -87,61 +85,3 @@ void js_conn_free(js_conn_t *conn) {
     free(conn);
 }
 
-/* ---- conn event handlers ---- */
-
-static void js_conn_on_read(js_event_t *ev) {
-    js_engine_t *eng = &js_thread_current->engine;
-    js_conn_t *conn = js_event_data(ev, js_conn_t, event);
-
-    int rc = js_conn_read(conn);
-    if (rc <= 0) {
-        js_conn_close(conn, &eng->epoll);
-        js_conn_free(conn);
-        return;
-    }
-
-    /* try to parse a complete HTTP request */
-    js_http_request_t req = {0};
-    int parsed = js_http_parse_request(&conn->rbuf, &req);
-    if (parsed < 0) {
-        js_conn_close(conn, &eng->epoll);
-        js_conn_free(conn);
-        return;
-    }
-    if (parsed == 0)
-        return; /* need more data */
-
-    /* execute JS handler */
-    js_http_response_t resp = {0};
-    js_runtime_t *rt = js_thread_current->rt;
-    if (js_qjs_handle_request(rt, &req, &resp) < 0) {
-        resp.status = 500;
-        resp.body = strdup("Internal Server Error");
-        resp.body_len = strlen(resp.body);
-    }
-    js_http_request_free(&req);
-
-    /* serialize response into write buffer */
-    js_http_serialize_response(&resp, &conn->wbuf);
-    js_http_response_free(&resp);
-
-    conn->state = JS_CONN_WRITING;
-    js_epoll_mod(&eng->epoll, ev->fd, EPOLLOUT, ev);
-}
-
-static void js_conn_on_write(js_event_t *ev) {
-    js_engine_t *eng = &js_thread_current->engine;
-    js_conn_t *conn = js_event_data(ev, js_conn_t, event);
-
-    int rc = js_conn_write(conn);
-    if (rc < 0) {
-        js_conn_close(conn, &eng->epoll);
-        js_conn_free(conn);
-        return;
-    }
-    if (rc == 1) {
-        /* fully written, close connection (no keep-alive for now) */
-        js_conn_close(conn, &eng->epoll);
-        js_conn_free(conn);
-    }
-}

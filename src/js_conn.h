@@ -20,7 +20,15 @@ typedef struct {
 
 /* ---- listen api ---- */
 
-int js_listen_start(js_event_t *ev, int lfd, js_epoll_t *ep);
+typedef void (*js_conn_init_t)(js_conn_t *conn);
+
+typedef struct {
+    js_event_t      event;
+    js_conn_init_t  on_conn_init;   /* upper layer sets conn handlers */
+} js_listen_t;
+
+int js_listen_start(js_listen_t *ls, int lfd, js_epoll_t *ep,
+                    js_conn_init_t on_conn_init);
 
 /* ---- conn api ---- */
 

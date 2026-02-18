@@ -1,5 +1,71 @@
 #include "js_main.h"
 
+/* ---- conn event handlers ---- */
+
+static void js_http_on_read(js_event_t *ev) {
+    js_engine_t *eng = &js_thread_current->engine;
+    js_conn_t *conn = js_event_data(ev, js_conn_t, event);
+
+    int rc = js_conn_read(conn);
+    if (rc <= 0) {
+        js_conn_close(conn, &eng->epoll);
+        js_conn_free(conn);
+        return;
+    }
+
+    /* try to parse a complete HTTP request */
+    js_http_request_t req = {0};
+    int parsed = js_http_parse_request(&conn->rbuf, &req);
+    if (parsed < 0) {
+        js_conn_close(conn, &eng->epoll);
+        js_conn_free(conn);
+        return;
+    }
+    if (parsed == 0)
+        return; /* need more data */
+
+    /* execute JS handler */
+    js_http_response_t resp = {0};
+    js_runtime_t *rt = js_thread_current->rt;
+    if (js_qjs_handle_request(rt, &req, &resp) < 0) {
+        resp.status = 500;
+        resp.body = strdup("Internal Server Error");
+        resp.body_len = strlen(resp.body);
+    }
+    js_http_request_free(&req);
+
+    /* serialize response into write buffer */
+    js_http_serialize_response(&resp, &conn->wbuf);
+    js_http_response_free(&resp);
+
+    conn->state = JS_CONN_WRITING;
+    js_epoll_mod(&eng->epoll, ev->fd, EPOLLOUT, ev);
+}
+
+static void js_http_on_write(js_event_t *ev) {
+    js_engine_t *eng = &js_thread_current->engine;
+    js_conn_t *conn = js_event_data(ev, js_conn_t, event);
+
+    int rc = js_conn_write(conn);
+    if (rc < 0) {
+        js_conn_close(conn, &eng->epoll);
+        js_conn_free(conn);
+        return;
+    }
+    if (rc == 1) {
+        /* fully written, close connection (no keep-alive for now) */
+        js_conn_close(conn, &eng->epoll);
+        js_conn_free(conn);
+    }
+}
+
+void js_http_conn_init(js_conn_t *conn) {
+    conn->event.read  = js_http_on_read;
+    conn->event.write = js_http_on_write;
+}
+
+/* ---- http ---- */
+
 js_http_method_t js_http_method_from_str(const char *str, int len) {
     if (len == 3 && strncmp(str, "GET", 3) == 0) return JS_HTTP_GET;
     if (len == 4 && strncmp(str, "POST", 4) == 0) return JS_HTTP_POST;
