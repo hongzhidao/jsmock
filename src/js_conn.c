@@ -4,7 +4,6 @@
 
 static void js_listen_accept(js_event_t *ev) {
     js_listen_t *ls = js_event_data(ev, js_listen_t, event);
-    js_engine_t *eng = &js_thread_current->engine;
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
     int fd = accept4(ev->fd, (struct sockaddr *)&addr, &addrlen,
@@ -19,7 +18,6 @@ static void js_listen_accept(js_event_t *ev) {
     }
 
     ls->on_conn_init(conn);
-    js_epoll_add(&eng->epoll, fd, EPOLLIN, &conn->event);
 }
 
 int js_listen_start(js_listen_t *ls, int lfd, js_epoll_t *ep,

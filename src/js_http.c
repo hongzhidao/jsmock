@@ -60,8 +60,10 @@ static void js_http_on_write(js_event_t *ev) {
 }
 
 void js_http_conn_init(js_conn_t *conn) {
+    js_engine_t *eng = &js_thread_current->engine;
     conn->event.read  = js_http_on_read;
     conn->event.write = js_http_on_write;
+    js_epoll_add(&eng->epoll, conn->event.fd, EPOLLIN, &conn->event);
 }
 
 /* ---- http ---- */
