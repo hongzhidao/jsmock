@@ -6,6 +6,7 @@
 typedef enum {
     JS_CONN_READING,
     JS_CONN_WRITING,
+    JS_CONN_PENDING,    /* waiting for async JS handler (setTimeout) */
     JS_CONN_CLOSING
 } js_conn_state_t;
 

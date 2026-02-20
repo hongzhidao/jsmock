@@ -27,14 +27,21 @@ static void js_http_on_read(js_event_t *ev) {
     /* execute JS handler */
     js_http_response_t resp = {0};
     js_runtime_t *rt = js_thread_current->rt;
-    if (js_qjs_handle_request(rt, &req, &resp) < 0) {
+    int handle_rc = js_qjs_handle_request(rt, &req, &resp, conn);
+    js_http_request_free(&req);
+
+    if (handle_rc < 0) {
         resp.status = 500;
         resp.body = strdup("Internal Server Error");
         resp.body_len = strlen(resp.body);
+    } else if (handle_rc == 1) {
+        /* async: handler will complete later via timer callback */
+        conn->state = JS_CONN_PENDING;
+        js_epoll_del(&eng->epoll, ev->fd);
+        return;
     }
-    js_http_request_free(&req);
 
-    /* serialize response into write buffer */
+    /* sync path: serialize response into write buffer */
     js_http_serialize_response(&resp, &conn->wbuf);
     js_http_response_free(&resp);
 

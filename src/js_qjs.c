@@ -102,6 +102,9 @@ static void js_qjs_register_stubs(JSContext *ctx) {
                       JS_NewCFunction(ctx, js_stub_noop, "log", 1));
     JS_SetPropertyStr(ctx, global, "console", console);
 
+    JS_SetPropertyStr(ctx, global, "setTimeout",
+                      JS_NewCFunction(ctx, js_stub_noop, "setTimeout", 2));
+
     JS_FreeValue(ctx, global);
 }
 
@@ -207,8 +210,71 @@ fail:
     return -1;
 }
 
+/* ---- Promise resolve/reject callbacks ---- */
+
+static JSValue js_promise_on_resolve(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val;
+    js_exec_t *exec = JS_GetContextOpaque(ctx);
+
+    if (argc >= 1)
+        js_web_read_response(ctx, argv[0], &exec->resp);
+    else {
+        exec->resp.status = 500;
+        exec->resp.body = strdup("Internal Server Error");
+        exec->resp.body_len = 21;
+    }
+    exec->resolved = 1;
+    return JS_UNDEFINED;
+}
+
+static JSValue js_promise_on_reject(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    js_exec_t *exec = JS_GetContextOpaque(ctx);
+    exec->resp.status = 500;
+    exec->resp.body = strdup("Internal Server Error");
+    exec->resp.body_len = 21;
+    exec->resolved = 1;
+    return JS_UNDEFINED;
+}
+
+/* ---- async lifecycle ---- */
+
+void js_pending_finish(js_exec_t *exec) {
+    js_engine_t *eng = &js_thread_current->engine;
+    js_conn_t *conn = exec->conn;
+
+    /* cancel any outstanding timers */
+    js_timeout_t *to = exec->timeouts;
+    while (to) {
+        js_timeout_t *next = to->next;
+        js_timer_delete(&eng->timers, &to->timer);
+        JS_FreeValue(exec->qctx, to->cb);
+        free(to);
+        to = next;
+    }
+    exec->timeouts = NULL;
+
+    /* serialize response into conn write buffer */
+    js_http_serialize_response(&exec->resp, &conn->wbuf);
+    js_http_response_free(&exec->resp);
+
+    /* resume the connection for writing */
+    conn->state = JS_CONN_WRITING;
+    js_epoll_add(&eng->epoll, conn->event.fd, EPOLLOUT, &conn->event);
+
+    /* cleanup JS state */
+    js_route_free_all(exec->routes, exec->qctx);
+    JS_RunGC(exec->qrt);
+    JS_FreeContext(exec->qctx);
+    JS_FreeRuntime(exec->qrt);
+    free(exec);
+}
+
 int js_qjs_handle_request(js_runtime_t *rt,
-                          js_http_request_t *req, js_http_response_t *resp) {
+                          js_http_request_t *req, js_http_response_t *resp,
+                          js_conn_t *conn) {
     JSRuntime *qrt = JS_NewRuntime();
     JSContext *qctx = JS_NewContext(qrt);
     JS_SetModuleLoaderFunc(qrt, js_module_normalize, js_module_loader, NULL);
@@ -218,6 +284,10 @@ int js_qjs_handle_request(js_runtime_t *rt,
         .routes = NULL,
         .qrt = qrt,
         .qctx = qctx,
+        .conn = NULL,
+        .resp = {0},
+        .resolved = 0,
+        .timeouts = NULL,
     };
 
     /* register Web API bindings */
@@ -270,15 +340,78 @@ int js_qjs_handle_request(js_runtime_t *rt,
         goto fail;
     }
 
-    /* read JS Response into C response */
-    js_web_read_response(qctx, handler_result, resp);
-    JS_FreeValue(qctx, handler_result);
+    /* drain pending jobs after handler call */
+    while (JS_ExecutePendingJob(qrt, &pctx) > 0)
+        ;
 
-    js_route_free_all(exec.routes, qctx);
-    JS_RunGC(qrt);
-    JS_FreeContext(qctx);
-    JS_FreeRuntime(qrt);
-    return 0;
+    /* check if result is a Promise */
+    JSPromiseStateEnum state = JS_PromiseState(qctx, handler_result);
+
+    if (state == JS_PROMISE_FULFILLED) {
+        /* already resolved — extract result synchronously */
+        JSValue resolved_val = JS_PromiseResult(qctx, handler_result);
+        JS_FreeValue(qctx, handler_result);
+        js_web_read_response(qctx, resolved_val, resp);
+        JS_FreeValue(qctx, resolved_val);
+
+        js_route_free_all(exec.routes, qctx);
+        JS_RunGC(qrt);
+        JS_FreeContext(qctx);
+        JS_FreeRuntime(qrt);
+        return 0;
+
+    } else if (state == JS_PROMISE_REJECTED) {
+        JS_FreeValue(qctx, handler_result);
+        goto fail;
+
+    } else if (state == JS_PROMISE_PENDING) {
+        /* attach .then(onResolve, onReject) */
+        JSValue on_resolve = JS_NewCFunction(qctx, js_promise_on_resolve,
+                                             "onResolve", 1);
+        JSValue on_reject = JS_NewCFunction(qctx, js_promise_on_reject,
+                                            "onReject", 1);
+        JSValue args[2] = { on_resolve, on_reject };
+        JSValue then_result = JS_Invoke(qctx, handler_result,
+                                        JS_NewAtom(qctx, "then"), 2, args);
+        JS_FreeValue(qctx, then_result);
+        JS_FreeValue(qctx, on_resolve);
+        JS_FreeValue(qctx, on_reject);
+        JS_FreeValue(qctx, handler_result);
+
+        /* drain again — may resolve immediately */
+        while (JS_ExecutePendingJob(qrt, &pctx) > 0)
+            ;
+
+        if (exec.resolved && exec.timeouts == NULL) {
+            /* resolved during drain (e.g., async handler with no real await) */
+            *resp = exec.resp;
+            memset(&exec.resp, 0, sizeof(exec.resp));
+
+            js_route_free_all(exec.routes, qctx);
+            JS_RunGC(qrt);
+            JS_FreeContext(qctx);
+            JS_FreeRuntime(qrt);
+            return 0;
+        }
+
+        /* truly async — allocate exec on heap, return 1 */
+        js_exec_t *heap_exec = malloc(sizeof(*heap_exec));
+        *heap_exec = exec;
+        heap_exec->conn = conn;
+        JS_SetContextOpaque(qctx, heap_exec);
+        return 1;
+
+    } else {
+        /* not a Promise — sync path (plain Response object) */
+        js_web_read_response(qctx, handler_result, resp);
+        JS_FreeValue(qctx, handler_result);
+
+        js_route_free_all(exec.routes, qctx);
+        JS_RunGC(qrt);
+        JS_FreeContext(qctx);
+        JS_FreeRuntime(qrt);
+        return 0;
+    }
 
 fail:
     js_route_free_all(exec.routes, qctx);

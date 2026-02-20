@@ -1,5 +1,71 @@
 #include "js_main.h"
 
+/* ---- setTimeout support ---- */
+
+static void js_timeout_handler(js_timer_t *timer, void *data) {
+    (void)data;
+    js_timeout_t *to = js_timer_data(timer, js_timeout_t, timer);
+    JSContext *qctx = to->qctx;
+    js_exec_t *exec = JS_GetContextOpaque(qctx);
+
+    /* unlink from exec->timeouts list */
+    js_timeout_t **pp = &exec->timeouts;
+    while (*pp) {
+        if (*pp == to) {
+            *pp = to->next;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+
+    /* execute JS callback */
+    JSValue ret = JS_Call(qctx, to->cb, JS_UNDEFINED, 0, NULL);
+    JS_FreeValue(qctx, ret);
+    JS_FreeValue(qctx, to->cb);
+
+    /* drain pending jobs */
+    JSContext *pctx;
+    while (JS_ExecutePendingJob(exec->qrt, &pctx) > 0)
+        ;
+
+    /* if async request and promise resolved, finish it */
+    if (exec->conn && exec->resolved && exec->timeouts == NULL)
+        js_pending_finish(exec);
+
+    free(to);
+}
+
+static JSValue js_set_timeout(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0]))
+        return JS_UNDEFINED;
+
+    int32_t delay = 0;
+    if (argc >= 2)
+        JS_ToInt32(ctx, &delay, argv[1]);
+    if (delay < 0)
+        delay = 0;
+
+    js_exec_t *exec = JS_GetContextOpaque(ctx);
+    js_engine_t *eng = &js_thread_current->engine;
+
+    js_timeout_t *to = calloc(1, sizeof(*to));
+    to->qctx = ctx;
+    to->cb = JS_DupValue(ctx, argv[0]);
+    to->timer.handler = js_timeout_handler;
+    to->timer.data = NULL;
+    to->timer.bias = 0;
+
+    /* link into exec->timeouts list */
+    to->next = exec->timeouts;
+    exec->timeouts = to;
+
+    js_timer_add(&eng->timers, &to->timer, (js_msec_t)delay);
+
+    return JS_UNDEFINED;
+}
+
 /* ---- class IDs ---- */
 
 static JSClassID js_response_class_id;
@@ -902,6 +968,11 @@ void js_web_init(js_exec_t *exec) {
     JS_SetPropertyStr(ctx, mock, "store", store);
 
     JS_SetPropertyStr(ctx, global, "mock", mock);
+
+    /* ---- setTimeout ---- */
+    JS_SetPropertyStr(ctx, global, "setTimeout",
+                      JS_NewCFunction(ctx, js_set_timeout, "setTimeout", 2));
+
     JS_FreeValue(ctx, global);
 }
 
