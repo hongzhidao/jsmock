@@ -257,7 +257,7 @@ void js_pending_finish(js_exec_t *exec) {
     exec->timeouts = NULL;
 
     /* serialize response into conn write buffer */
-    js_http_serialize_response(&exec->resp, &conn->wbuf);
+    js_http_serialize_response(&exec->resp, &conn->wbuf, conn->keep_alive);
     js_http_response_free(&exec->resp);
 
     /* resume the connection for writing */

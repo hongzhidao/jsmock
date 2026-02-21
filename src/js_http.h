@@ -45,7 +45,8 @@ void js_http_conn_init(js_conn_t *conn);
 /* ---- api ---- */
 
 int              js_http_parse_request(js_buf_t *buf, js_http_request_t *req);
-int              js_http_serialize_response(js_http_response_t *resp, js_buf_t *out);
+int              js_http_serialize_response(js_http_response_t *resp, js_buf_t *out,
+                                            int keep_alive);
 const char      *js_http_status_text(int code);
 js_http_method_t js_http_method_from_str(const char *str, int len);
 void             js_http_request_free(js_http_request_t *req);

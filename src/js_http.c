@@ -2,16 +2,8 @@
 
 /* ---- conn event handlers ---- */
 
-static void js_http_on_read(js_event_t *ev) {
-    js_engine_t *eng = &js_thread_current->engine;
-    js_conn_t *conn = js_event_data(ev, js_conn_t, event);
-
-    int rc = js_conn_read(conn);
-    if (rc <= 0) {
-        js_conn_close(conn, &eng->epoll);
-        js_conn_free(conn);
-        return;
-    }
+static void js_http_process(js_engine_t *eng, js_conn_t *conn) {
+    js_event_t *ev = &conn->event;
 
     /* try to parse a complete HTTP request */
     js_http_request_t req = {0};
@@ -23,6 +15,16 @@ static void js_http_on_read(js_event_t *ev) {
     }
     if (parsed == 0)
         return; /* need more data */
+
+    /* determine keep-alive (HTTP/1.1 default is keep-alive) */
+    conn->keep_alive = 1;
+    for (int i = 0; i < req.header_count; i++) {
+        if (strcasecmp(req.headers[i].name, "Connection") == 0) {
+            if (strcasecmp(req.headers[i].value, "close") == 0)
+                conn->keep_alive = 0;
+            break;
+        }
+    }
 
     /* execute JS handler */
     js_http_response_t resp = {0};
@@ -41,12 +43,26 @@ static void js_http_on_read(js_event_t *ev) {
         return;
     }
 
-    /* sync path: serialize response into write buffer */
-    js_http_serialize_response(&resp, &conn->wbuf);
+    /* serialize response into write buffer */
+    js_http_serialize_response(&resp, &conn->wbuf, conn->keep_alive);
     js_http_response_free(&resp);
 
     conn->state = JS_CONN_WRITING;
     js_epoll_mod(&eng->epoll, ev->fd, EPOLLOUT, ev);
+}
+
+static void js_http_on_read(js_event_t *ev) {
+    js_engine_t *eng = &js_thread_current->engine;
+    js_conn_t *conn = js_event_data(ev, js_conn_t, event);
+
+    int rc = js_conn_read(conn);
+    if (rc <= 0) {
+        js_conn_close(conn, &eng->epoll);
+        js_conn_free(conn);
+        return;
+    }
+
+    js_http_process(eng, conn);
 }
 
 static void js_http_on_write(js_event_t *ev) {
@@ -60,9 +76,19 @@ static void js_http_on_write(js_event_t *ev) {
         return;
     }
     if (rc == 1) {
-        /* fully written, close connection (no keep-alive for now) */
-        js_conn_close(conn, &eng->epoll);
-        js_conn_free(conn);
+        if (conn->keep_alive) {
+            /* reuse connection for next request */
+            conn->wbuf.len = 0;
+            conn->woff = 0;
+            conn->state = JS_CONN_READING;
+            js_epoll_mod(&eng->epoll, ev->fd, EPOLLIN, ev);
+            /* process pipelined request already in read buffer */
+            if (conn->rbuf.len > 0)
+                js_http_process(eng, conn);
+        } else {
+            js_conn_close(conn, &eng->epoll);
+            js_conn_free(conn);
+        }
     }
 }
 
@@ -192,7 +218,8 @@ int js_http_parse_request(js_buf_t *buf, js_http_request_t *req) {
     return 1;
 }
 
-int js_http_serialize_response(js_http_response_t *resp, js_buf_t *out) {
+int js_http_serialize_response(js_http_response_t *resp, js_buf_t *out,
+                               int keep_alive) {
     char line[256];
     int n;
 
@@ -210,13 +237,17 @@ int js_http_serialize_response(js_http_response_t *resp, js_buf_t *out) {
             return -1;
     }
 
-    /* Content-Length if body present */
-    if (resp->body && resp->body_len > 0) {
-        n = snprintf(line, sizeof(line), "Content-Length: %zu\r\n",
-                     resp->body_len);
-        if (js_buf_append(out, line, n) < 0)
-            return -1;
-    }
+    /* Content-Length (always required for keep-alive) */
+    n = snprintf(line, sizeof(line), "Content-Length: %zu\r\n",
+                 resp->body ? resp->body_len : (size_t)0);
+    if (js_buf_append(out, line, n) < 0)
+        return -1;
+
+    /* Connection header */
+    n = snprintf(line, sizeof(line), "Connection: %s\r\n",
+                 keep_alive ? "keep-alive" : "close");
+    if (js_buf_append(out, line, n) < 0)
+        return -1;
 
     /* end of headers */
     if (js_buf_append(out, "\r\n", 2) < 0)

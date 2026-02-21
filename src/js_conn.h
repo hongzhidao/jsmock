@@ -17,6 +17,7 @@ typedef struct {
     js_buf_t         wbuf;
     size_t           woff;          /* write offset (bytes already sent) */
     time_t           last_active;
+    int              keep_alive;    /* HTTP keep-alive flag */
 } js_conn_t;
 
 /* ---- listen api ---- */
