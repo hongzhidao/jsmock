@@ -293,15 +293,16 @@ int js_qjs_handle_request(js_runtime_t *rt,
     /* register Web API bindings */
     js_web_init(&exec);
 
-    /* compile from source and evaluate (supports ES module imports) */
-    size_t src_len;
-    char *src = js_qjs_read_file(rt->script_path, &src_len);
-    if (!src) goto fail;
-
-    JSValue obj = JS_Eval(qctx, src, src_len, rt->script_path,
-                          JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-    free(src);
+    /* load pre-compiled bytecode (compiled once at startup) */
+    JSValue obj = JS_ReadObject(qctx, rt->bytecode, rt->bytecode_len,
+                                JS_READ_OBJ_BYTECODE);
     if (JS_IsException(obj)) goto fail;
+
+    /* resolve imported modules before evaluation */
+    if (JS_ResolveModule(qctx, obj) < 0) {
+        JS_FreeValue(qctx, obj);
+        goto fail;
+    }
 
     JSValue result = JS_EvalFunction(qctx, obj);
     if (JS_IsException(result)) {
