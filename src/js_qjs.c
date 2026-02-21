@@ -266,7 +266,6 @@ void js_pending_finish(js_exec_t *exec) {
 
     /* cleanup JS state */
     js_route_free_all(exec->routes, exec->qctx);
-    JS_RunGC(exec->qrt);
     JS_FreeContext(exec->qctx);
     JS_FreeRuntime(exec->qrt);
     free(exec);
@@ -356,7 +355,6 @@ int js_qjs_handle_request(js_runtime_t *rt,
         JS_FreeValue(qctx, resolved_val);
 
         js_route_free_all(exec.routes, qctx);
-        JS_RunGC(qrt);
         JS_FreeContext(qctx);
         JS_FreeRuntime(qrt);
         return 0;
@@ -408,7 +406,6 @@ int js_qjs_handle_request(js_runtime_t *rt,
         JS_FreeValue(qctx, handler_result);
 
         js_route_free_all(exec.routes, qctx);
-        JS_RunGC(qrt);
         JS_FreeContext(qctx);
         JS_FreeRuntime(qrt);
         return 0;
