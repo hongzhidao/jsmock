@@ -35,7 +35,7 @@ int  js_qjs_read_config(const char *script_path, uint8_t *bytecode, size_t len,
 int  js_qjs_handle_request(struct js_runtime_s *rt,
                            js_http_request_t *req, js_http_response_t *resp,
                            js_conn_t *conn);
-/* returns: 0=sync, 1=async, -1=error */
+/* returns: 0=sync (response in *resp), 1=async (response sent later) */
 
 void js_pending_finish(js_exec_t *exec);
 

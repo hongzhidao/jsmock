@@ -318,13 +318,11 @@ int js_qjs_handle_request(js_runtime_t *rt,
     /* match route */
     js_route_match_t match = {0};
     if (!js_route_match(exec.routes, req->method, req->path, &match)) {
-        resp->status = 404;
-        resp->body = strdup("Not Found");
-        resp->body_len = 9;
-        js_route_free_all(exec.routes, qctx);
-        JS_FreeContext(qctx);
-        JS_FreeRuntime(qrt);
-        return 0;
+        exec.resp.status = 404;
+        exec.resp.body = strdup("Not Found");
+        exec.resp.body_len = 9;
+        exec.resolved = 1;
+        goto done;
     }
 
     /* build JS Request object and call handler */
@@ -351,13 +349,10 @@ int js_qjs_handle_request(js_runtime_t *rt,
         /* already resolved — extract result synchronously */
         JSValue resolved_val = JS_PromiseResult(qctx, handler_result);
         JS_FreeValue(qctx, handler_result);
-        js_web_read_response(qctx, resolved_val, resp);
+        js_web_read_response(qctx, resolved_val, &exec.resp);
         JS_FreeValue(qctx, resolved_val);
-
-        js_route_free_all(exec.routes, qctx);
-        JS_FreeContext(qctx);
-        JS_FreeRuntime(qrt);
-        return 0;
+        exec.resolved = 1;
+        goto done;
 
     } else if (state == JS_PROMISE_REJECTED) {
         JS_FreeValue(qctx, handler_result);
@@ -381,39 +376,44 @@ int js_qjs_handle_request(js_runtime_t *rt,
         while (JS_ExecutePendingJob(qrt, &pctx) > 0)
             ;
 
-        if (exec.resolved && exec.timeouts == NULL) {
-            /* resolved during drain (e.g., async handler with no real await) */
-            *resp = exec.resp;
-            memset(&exec.resp, 0, sizeof(exec.resp));
+        if (exec.resolved)
+            goto done;
 
-            js_route_free_all(exec.routes, qctx);
-            JS_RunGC(qrt);
-            JS_FreeContext(qctx);
-            JS_FreeRuntime(qrt);
-            return 0;
-        }
+        /* truly async — not yet resolved */
+        goto deferred;
 
-        /* truly async — allocate exec on heap, return 1 */
+    } else {
+        /* not a Promise — sync path (plain Response object) */
+        js_web_read_response(qctx, handler_result, &exec.resp);
+        JS_FreeValue(qctx, handler_result);
+        exec.resolved = 1;
+        goto done;
+    }
+
+fail:
+    exec.resp.status = 500;
+    exec.resp.body = strdup("Internal Server Error");
+    exec.resp.body_len = 21;
+    exec.resolved = 1;
+    /* fall through to done */
+
+done:
+    if (exec.timeouts != NULL)
+        goto deferred;
+
+    *resp = exec.resp;
+    memset(&exec.resp, 0, sizeof(exec.resp));
+    js_route_free_all(exec.routes, qctx);
+    JS_FreeContext(qctx);
+    JS_FreeRuntime(qrt);
+    return 0;
+
+deferred:
+    {
         js_exec_t *heap_exec = malloc(sizeof(*heap_exec));
         *heap_exec = exec;
         heap_exec->conn = conn;
         JS_SetContextOpaque(qctx, heap_exec);
         return 1;
-
-    } else {
-        /* not a Promise — sync path (plain Response object) */
-        js_web_read_response(qctx, handler_result, resp);
-        JS_FreeValue(qctx, handler_result);
-
-        js_route_free_all(exec.routes, qctx);
-        JS_FreeContext(qctx);
-        JS_FreeRuntime(qrt);
-        return 0;
     }
-
-fail:
-    js_route_free_all(exec.routes, qctx);
-    JS_FreeContext(qctx);
-    JS_FreeRuntime(qrt);
-    return -1;
 }

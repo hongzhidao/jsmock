@@ -32,11 +32,7 @@ static void js_http_process(js_engine_t *eng, js_conn_t *conn) {
     int handle_rc = js_qjs_handle_request(rt, &req, &resp, conn);
     js_http_request_free(&req);
 
-    if (handle_rc < 0) {
-        resp.status = 500;
-        resp.body = strdup("Internal Server Error");
-        resp.body_len = strlen(resp.body);
-    } else if (handle_rc == 1) {
+    if (handle_rc == 1) {
         /* async: handler will complete later via timer callback */
         conn->state = JS_CONN_PENDING;
         js_epoll_del(&eng->epoll, ev->fd);
