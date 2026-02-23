@@ -28,6 +28,24 @@ static void js_timeout_handler(js_timer_t *timer, void *data) {
     while (JS_ExecutePendingJob(exec->qrt, &pctx) > 0)
         ;
 
+    /* deferred module eval completed — dispatch the saved request */
+    if (exec->conn && exec->req != NULL && exec->timeouts == NULL) {
+        js_http_request_t *dreq = exec->req;
+        exec->req = NULL;
+        int drc = js_qjs_dispatch_request(exec, dreq);
+        js_http_request_free(dreq);
+        free(dreq);
+        if (drc < 0) {
+            exec->resp.status = 500;
+            exec->resp.body = strdup("Internal Server Error");
+            exec->resp.body_len = 21;
+            exec->resolved = 1;
+        }
+        if (exec->resolved && exec->timeouts == NULL)
+            js_pending_finish(exec);
+        return;
+    }
+
     /* if async request and promise resolved, finish it */
     if (exec->conn && exec->resolved && exec->timeouts == NULL)
         js_pending_finish(exec);

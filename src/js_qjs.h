@@ -18,6 +18,7 @@ typedef struct {
     js_http_response_t   resp;     /* filled by .then() callback */
     int                  resolved; /* 1 = .then() invoked */
     js_timeout_t        *timeouts; /* linked list of pending timers */
+    js_http_request_t   *req;      /* non-NULL = deferred module eval */
 } js_exec_t;
 
 struct js_timeout_s {
@@ -38,5 +39,6 @@ int  js_qjs_handle_request(struct js_runtime_s *rt,
 /* returns: 0=sync (response in *resp), 1=async (response sent later) */
 
 void js_pending_finish(js_exec_t *exec);
+int  js_qjs_dispatch_request(js_exec_t *exec, js_http_request_t *req);
 
 #endif

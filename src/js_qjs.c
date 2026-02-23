@@ -69,6 +69,16 @@ static JSValue js_stub_noop(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+static JSValue js_stub_setTimeout(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc >= 1 && JS_IsFunction(ctx, argv[0])) {
+        JSValue ret = JS_Call(ctx, argv[0], JS_UNDEFINED, 0, NULL);
+        JS_FreeValue(ctx, ret);
+    }
+    return JS_UNDEFINED;
+}
+
 static void js_qjs_register_stubs(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
 
@@ -103,7 +113,7 @@ static void js_qjs_register_stubs(JSContext *ctx) {
     JS_SetPropertyStr(ctx, global, "console", console);
 
     JS_SetPropertyStr(ctx, global, "setTimeout",
-                      JS_NewCFunction(ctx, js_stub_noop, "setTimeout", 2));
+                      JS_NewCFunction(ctx, js_stub_setTimeout, "setTimeout", 2));
 
     JS_FreeValue(ctx, global);
 }
@@ -245,6 +255,13 @@ void js_pending_finish(js_exec_t *exec) {
     js_engine_t *eng = &js_thread_current->engine;
     js_conn_t *conn = exec->conn;
 
+    /* free deferred request if still present */
+    if (exec->req) {
+        js_http_request_free(exec->req);
+        free(exec->req);
+        exec->req = NULL;
+    }
+
     /* cancel any outstanding timers */
     js_timeout_t *to = exec->timeouts;
     while (to) {
@@ -271,6 +288,88 @@ void js_pending_finish(js_exec_t *exec) {
     free(exec);
 }
 
+/* returns: 0=done (response in exec->resp), 1=async deferred, -1=fail */
+int js_qjs_dispatch_request(js_exec_t *exec, js_http_request_t *req) {
+    JSContext *qctx = exec->qctx;
+    JSRuntime *qrt = exec->qrt;
+
+    /* match route */
+    js_route_match_t match = {0};
+    if (!js_route_match(exec->routes, req->method, req->path, &match)) {
+        exec->resp.status = 404;
+        exec->resp.body = strdup("Not Found");
+        exec->resp.body_len = 9;
+        exec->resolved = 1;
+        return 0;
+    }
+
+    /* build JS Request object and call handler */
+    JSValue js_req = js_web_new_request(qctx, req,
+                                        match.params, match.param_count);
+    JSValue handler_result = JS_Call(qctx, match.route->handler,
+                                    JS_UNDEFINED, 1, &js_req);
+    JS_FreeValue(qctx, js_req);
+    js_route_match_free(&match);
+
+    if (JS_IsException(handler_result)) {
+        JS_FreeValue(qctx, handler_result);
+        return -1;
+    }
+
+    /* drain pending jobs after handler call */
+    JSContext *pctx;
+    while (JS_ExecutePendingJob(qrt, &pctx) > 0)
+        ;
+
+    /* check if result is a Promise */
+    JSPromiseStateEnum state = JS_PromiseState(qctx, handler_result);
+
+    if (state == JS_PROMISE_FULFILLED) {
+        /* already resolved — extract result synchronously */
+        JSValue resolved_val = JS_PromiseResult(qctx, handler_result);
+        JS_FreeValue(qctx, handler_result);
+        js_web_read_response(qctx, resolved_val, &exec->resp);
+        JS_FreeValue(qctx, resolved_val);
+        exec->resolved = 1;
+        return 0;
+
+    } else if (state == JS_PROMISE_REJECTED) {
+        JS_FreeValue(qctx, handler_result);
+        return -1;
+
+    } else if (state == JS_PROMISE_PENDING) {
+        /* attach .then(onResolve, onReject) */
+        JSValue on_resolve = JS_NewCFunction(qctx, js_promise_on_resolve,
+                                             "onResolve", 1);
+        JSValue on_reject = JS_NewCFunction(qctx, js_promise_on_reject,
+                                            "onReject", 1);
+        JSValue args[2] = { on_resolve, on_reject };
+        JSValue then_result = JS_Invoke(qctx, handler_result,
+                                        JS_NewAtom(qctx, "then"), 2, args);
+        JS_FreeValue(qctx, then_result);
+        JS_FreeValue(qctx, on_resolve);
+        JS_FreeValue(qctx, on_reject);
+        JS_FreeValue(qctx, handler_result);
+
+        /* drain again — may resolve immediately */
+        while (JS_ExecutePendingJob(qrt, &pctx) > 0)
+            ;
+
+        if (exec->resolved)
+            return 0;
+
+        /* truly async — not yet resolved */
+        return 1;
+
+    } else {
+        /* not a Promise — sync path (plain Response object) */
+        js_web_read_response(qctx, handler_result, &exec->resp);
+        JS_FreeValue(qctx, handler_result);
+        exec->resolved = 1;
+        return 0;
+    }
+}
+
 int js_qjs_handle_request(js_runtime_t *rt,
                           js_http_request_t *req, js_http_response_t *resp,
                           js_conn_t *conn) {
@@ -287,6 +386,7 @@ int js_qjs_handle_request(js_runtime_t *rt,
         .resp = {0},
         .resolved = 0,
         .timeouts = NULL,
+        .req = NULL,
     };
 
     /* register Web API bindings */
@@ -315,80 +415,32 @@ int js_qjs_handle_request(js_runtime_t *rt,
     while (JS_ExecutePendingJob(qrt, &pctx) > 0)
         ;
 
-    /* match route */
-    js_route_match_t match = {0};
-    if (!js_route_match(exec.routes, req->method, req->path, &match)) {
-        exec.resp.status = 404;
-        exec.resp.body = strdup("Not Found");
-        exec.resp.body_len = 9;
-        exec.resolved = 1;
-        goto done;
-    }
-
-    /* build JS Request object and call handler */
-    JSValue js_req = js_web_new_request(qctx, req,
-                                        match.params, match.param_count);
-    JSValue handler_result = JS_Call(qctx, match.route->handler,
-                                    JS_UNDEFINED, 1, &js_req);
-    JS_FreeValue(qctx, js_req);
-    js_route_match_free(&match);
-
-    if (JS_IsException(handler_result)) {
-        JS_FreeValue(qctx, handler_result);
-        goto fail;
-    }
-
-    /* drain pending jobs after handler call */
-    while (JS_ExecutePendingJob(qrt, &pctx) > 0)
-        ;
-
-    /* check if result is a Promise */
-    JSPromiseStateEnum state = JS_PromiseState(qctx, handler_result);
-
-    if (state == JS_PROMISE_FULFILLED) {
-        /* already resolved — extract result synchronously */
-        JSValue resolved_val = JS_PromiseResult(qctx, handler_result);
-        JS_FreeValue(qctx, handler_result);
-        js_web_read_response(qctx, resolved_val, &exec.resp);
-        JS_FreeValue(qctx, resolved_val);
-        exec.resolved = 1;
-        goto done;
-
-    } else if (state == JS_PROMISE_REJECTED) {
-        JS_FreeValue(qctx, handler_result);
-        goto fail;
-
-    } else if (state == JS_PROMISE_PENDING) {
-        /* attach .then(onResolve, onReject) */
-        JSValue on_resolve = JS_NewCFunction(qctx, js_promise_on_resolve,
-                                             "onResolve", 1);
-        JSValue on_reject = JS_NewCFunction(qctx, js_promise_on_reject,
-                                            "onReject", 1);
-        JSValue args[2] = { on_resolve, on_reject };
-        JSValue then_result = JS_Invoke(qctx, handler_result,
-                                        JS_NewAtom(qctx, "then"), 2, args);
-        JS_FreeValue(qctx, then_result);
-        JS_FreeValue(qctx, on_resolve);
-        JS_FreeValue(qctx, on_reject);
-        JS_FreeValue(qctx, handler_result);
-
-        /* drain again — may resolve immediately */
-        while (JS_ExecutePendingJob(qrt, &pctx) > 0)
-            ;
-
-        if (exec.resolved)
-            goto done;
-
-        /* truly async — not yet resolved */
+    /* detect deferred module eval (top-level await with pending timers) */
+    if (exec.timeouts != NULL) {
+        /* deep-copy request to heap — caller frees the stack copy */
+        js_http_request_t *hreq = malloc(sizeof(*hreq));
+        *hreq = *req;
+        hreq->path = req->path ? strdup(req->path) : NULL;
+        hreq->query = req->query ? strdup(req->query) : NULL;
+        if (req->header_count > 0) {
+            hreq->headers = calloc(req->header_count, sizeof(js_header_t));
+            for (int i = 0; i < req->header_count; i++) {
+                hreq->headers[i].name = strdup(req->headers[i].name);
+                hreq->headers[i].value = strdup(req->headers[i].value);
+            }
+        }
+        hreq->body = req->body ? strndup(req->body, req->body_len) : NULL;
+        exec.req = hreq;
         goto deferred;
-
-    } else {
-        /* not a Promise — sync path (plain Response object) */
-        js_web_read_response(qctx, handler_result, &exec.resp);
-        JS_FreeValue(qctx, handler_result);
-        exec.resolved = 1;
-        goto done;
     }
+
+    /* dispatch the request (route matching → handler → promise) */
+    int drc = js_qjs_dispatch_request(&exec, req);
+    if (drc < 0)
+        goto fail;
+    if (drc == 1)
+        goto deferred;
+    goto done;
 
 fail:
     exec.resp.status = 500;
